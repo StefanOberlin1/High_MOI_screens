@@ -1,0 +1,138 @@
+---
+title: "Untitled"
+output: html_document
+date: "2026-01-13"
+---
+
+```{r}
+
+library(tidyverse)
+library(ShortRead)
+library(Biostrings)
+
+setwd("/Users/soberlin/UCSF_copy/NK_screen_server")
+runinfo = read.csv('runinfo.csv')
+bg = runinfo$Sample_ID
+
+lib_annot = read.csv("LGRv3_annotation.csv")
+lib_annot$sgRNA1_19 = toupper(substr(lib_annot$protospacer_A,2,20))
+mapping_rate_merged = vector()
+
+system("mkdir raw")
+
+####trim adapters and fix sequence lengths####
+
+for(i in 1:nrow(runinfo)){
+  system(paste0("cutadapt -g atcccttggagaaccaccttgttgG  -o raw/",bg[i],"T1_R1.fastq.gz -p raw/",bg[i],"T1_R3.fastq.gz SO0096_NKligand_screen/",bg[i],"_",runinfo$slot[i],"_R1_001.fastq.gz SO0096_NKligand_screen/",bg[i],"_",runinfo$slot[i],"_R3_001.fastq.gz --cores=12"))
+  system(paste0("cutadapt -l 19 -U 14 -U -1 -o raw/",bg[i],"cutadapt_R1.fastq.gz -p raw/",bg[i],"cutadapt_R3.fastq.gz raw/",bg[i],"T1_R1.fastq.gz  raw/",bg[i],"T1_R3.fastq.gz --cores=12"))
+}
+
+df_all_merged = lib_annot %>% mutate(sgRNA = toupper(sgRNA1_19), sgRNA2 = substr(reverseComplement(DNAStringSet(protospacer_B)),1,19))  %>% mutate(sgRNA1_19 = NULL, combined = paste0(sgRNA,sgRNA2))
+mapping_rate_merged = vector()
+
+####count index-sgRNA1 combos####
+indeces = read_csv("annotation/UMI.csv") %>% column_to_rownames("...1")
+
+df_all_merged_index = lib_annot %>% mutate(sgRNA = toupper(sgRNA1_19), sgRNA2 = substr(reverseComplement(DNAStringSet(protospacer_B)),1,19))  %>% mutate(sgRNA1_19 = NULL, combined = paste0(sgRNA,sgRNA2))
+mapping_rate_merged_index = vector()
+
+combinations <- expand.grid(row_num = 1:nrow(df_all_merged_index), index = indeces$UMI)
+
+# Subset original data frame based on row numbers
+df_result <- df_all_merged_index[combinations$row_num, ]
+
+# Add the index column with corresponding index values
+df_result$index <- combinations$index  
+df_result = df_result %>% mutate(combined = paste0(sgRNA, index))
+
+# read mapping / counting
+for(i in 1:length(bg)){
+  print(i)
+  reads_F <- readFastq(paste0("raw/",bg[i],"cutadapt_R1.fastq.gz"))
+  rd_F =  as.character(sread(reads_F))
+  rm(reads_F)
+  
+  reads_R <- readFastq(paste0("SO0096_NKligand_screen/",bg[i],"_",runinfo$slot[i],"_R2_001.fastq.gz"))
+  rd_R2 = as.character(sread(reads_R))
+  rm(reads_R)
+  
+  df = tibble(sgRNA = rd_F, index = rd_R2)
+  df = df %>% mutate(combined = paste0(sgRNA, index))
+  
+  nam = as.character(bg[i])
+
+  df_sel = df %>% filter(sgRNA %in% lib_annot$sgRNA1_19 & index %in% indeces$UMI)
+  df_count_sgRNA = df_sel%>%
+  	group_by(combined)%>%
+  	tally()
+  colnames(df_count_sgRNA) = c("combined", nam)
+  
+  #mapping rate
+  print(nrow(df_sel)/nrow(df))
+  mapping_rate_merged_index[i] = nrow(df_sel)/nrow(df)
+
+  df_result = full_join(df_result,df_count_sgRNA, by = "combined") %>%   mutate(!!nam := replace_na(get(nam), 0))
+  rm(df)
+  rm(df_all_merged_reference_temp)
+  gc()
+}
+
+####count index-sgRNA2 combos####
+
+indeces = read_csv("annotation/UMI.csv") %>% column_to_rownames("...1")
+df_all_merged_index = lib_annot %>% mutate(sgRNA = toupper(sgRNA1_19), sgRNA2 = substr(reverseComplement(DNAStringSet(protospacer_B)),1,19))  %>% mutate(sgRNA1_19 = NULL, combined = paste0(sgRNA,sgRNA2))
+mapping_rate_merged_index = vector()
+
+combinations <- expand.grid(row_num = 1:nrow(df_all_merged_index), index = indeces$UMI)
+
+# Subset original data frame based on row numbers
+df_result_2 <- df_all_merged_index[combinations$row_num, ] 
+# Add the index column with corresponding index values
+df_result_2$index <- combinations$index 
+df_result_2 = df_result_2 %>% mutate(combined = paste0(sgRNA2, index))
+
+##read mapping / counting
+for(i in 1:length(bg)){
+  print(i)
+  reads_F <- readFastq(paste0("raw/",bg[i],"cutadapt_R3.fastq.gz"))
+  rd_F =  as.character(sread(reads_F))
+  rm(reads_F)
+  
+  reads_R <- readFastq(paste0("SO0096_NKligand_screen/",bg[i],"_",runinfo$slot[i],"_R2_001.fastq.gz"))
+  rd_R2 = as.character(sread(reads_R))
+  rm(reads_R)
+  
+  df = tibble(sgRNA = rd_F, index = rd_R2)
+  df = df %>% mutate(combined = paste0(sgRNA, index))
+  
+  nam = as.character(bg[i])
+
+  df_sel = df %>% filter(sgRNA %in% df_result_2$sgRNA2 & index %in% indeces$UMI)
+  df_count_sgRNA = df_sel%>%
+  	group_by(combined)%>%
+  	tally()
+  colnames(df_count_sgRNA) = c("combined", nam)
+
+  
+  #mapping rate
+  print(nrow(df_sel)/nrow(df))
+  mapping_rate_merged_index[i] = nrow(df_sel)/nrow(df)
+  
+
+  df_result_2 = full_join(df_result_2,df_count_sgRNA, by = "combined") %>%   mutate(!!nam := replace_na(get(nam), 0))
+  rm(df)
+  rm(df_all_merged_reference_temp)
+  gc()
+}
+
+##merge read counts from sgRNA1 and sgRNA2 mapping
+df_result_combined = cbind(df_result_2[,1:18], df_result_2[,19:ncol(df_result_2)] + df_result[,19:ncol(df_result)])
+df_result_combined = df_result_combined %>% mutate(gene_trx = paste(gene, transcript, sep = "_"))
+
+##export final count table
+write.table(  df_result_combined %>%
+              mutate(sgRNA = combined, gene = gene_trx) %>%
+              dplyr::select(c(sgRNA, gene,all_of(bg))), sep ="\t", quote= F, col.names= T, row.names = F, file = "tables/sgrna_count_BC.txt") #can be used for MAGeCK analysis
+
+```
+

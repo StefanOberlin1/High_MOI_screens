@@ -1,0 +1,92 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-11-24"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(tidyverse)
+library(ShortRead)
+library(Biostrings)
+
+####read in sgRNA library annotation and runinfo####
+
+setwd("/Users/soberlin/UCSF_copy/high_MOI_screen_server/sublib8_2/")
+runinfo = read.csv('runinfo.csv')
+bg = runinfo$Name
+
+lib_annot = read.csv("../sublibraries_final_08112021.csv")
+lib_annot$sgRNA_19 = toupper(substr(lib_annot$protospacer.seq,2,20))
+
+####generate and filter for unique sgRNA annotation####
+lib_annot$unique_sgRNA = paste(lib_annot$sublibrary, lib_annot$sgRNA_19, sep = "_")
+lib_annot = lib_annot %>% distinct(unique_sgRNA, .keep_all = TRUE)
+
+####trim adapters and fix sequence lengths####
+system("mkdir raw")
+for(i in 1:nrow(runinfo)){
+    system(paste0("bash /home/stefan/Progs/bbmap/bbduk.sh in1=FASTQ/",bg[i],"_",runinfo$slot[i],"_R1_001.fastq.gz in2=FASTQ/",bg[i],"_",runinfo$slot[i],"_R2_001.fastq.gz out1=raw/",runinfo$Name[i],"T1_R1.fastq.gz out2=raw/",runinfo$Name[i],"T1_R2.fastq.gz ref=adapter_5P.fa ktrim=l minlen=20 k=10 mink=6 hdist=1 tpe tbo skipr2"))
+    system(paste0("bash /home/stefan/Progs/bbmap/bbduk.sh in=raw/",runinfo$Name[i],"T1_R1.fastq.gz out=raw/",runinfo$Name[i],"T2_R1.fastq.gz ftr=18"))
+    system(paste0("bash /home/stefan/Progs/bbmap/bbduk.sh in=raw/",runinfo$Name[i],"T1_R2.fastq.gz out=raw/",runinfo$Name[i],"T2_R2.fastq.gz ftr=20"))
+    system(paste0("rm raw/",runinfo$Name[i],"T1_R1.fastq.gz"))
+    system(paste0("rm raw/",runinfo$Name[i],"T1_R2.fastq.gz"))
+}
+
+####map sgRNAs and count reads####
+df_all = lib_annot
+df_all$sgRNA = df_all$sgRNA_19
+
+mapping_rate = vector()
+
+for(i in 1:length(bg)){
+  print(i)
+    reads_F <- readFastq(paste0("raw/",runinfo$Name[i],"T2_R1.fastq.gz"))
+  rd_F =  as.character(sread(reads_F))
+  rm(reads_F)
+  
+  reads_R <- readFastq(paste0("raw/",runinfo$Name[i],"T2_R2.fastq.gz"))
+  rd_R2 = as.character(sread(reads_R))
+  rm(reads_R)
+  
+  df = tibble(sgRNA = rd_F, BC = rd_R2) %>% mutate(sgRNA_ID = paste(sgRNA,BC,sep = "_"))
+  rm(rd_F)
+  rm(rd_R2)
+  df_sel = df %>% filter(sgRNA %in% lib_annot$sgRNA_19)
+  
+  #mapping rate
+  print(nrow(df_sel)/nrow(df))
+  mapping_rate[i] = nrow(df_sel)/nrow(df)
+  
+  nam = as.character(bg[i])
+  df_count = df_sel%>%
+  	group_by(sgRNA_ID)%>%
+  	tally()
+  
+  colnames(df_count) = c("sgRNA_ID", nam)
+
+  df_count_sgRNA = df_sel%>%
+  	group_by(sgRNA)%>%
+  	tally()
+    colnames(df_count_sgRNA) = c("sgRNA", nam)
+    
+  df_count_BC_per_sgRNA = df_sel%>% 
+    group_by(sgRNA) %>%
+    dplyr::summarise(n = n_distinct(BC))
+        colnames(df_count_BC_per_sgRNA) = c("sgRNA", paste(nam,"BC", sep = "_"))
+
+  df_all = full_join(df_all,df_count_sgRNA, by = "sgRNA") %>%   mutate(!!nam := replace_na(get(nam), 0))
+    df_all = full_join(df_all,df_count_BC_per_sgRNA, by = "sgRNA") %>%   mutate(!!paste(nam,"BC", sep = "_") := replace_na(get(paste(nam,"BC", sep = "_")), 0))
+
+}
+
+####convert NA instances to 0####
+df_all[is.na(df_all)] <- 0
+
+####export count table####
+
+write.csv(df_all, file = "counts_all.csv") #can be used for MAGeCK analysis
+
+```
+
